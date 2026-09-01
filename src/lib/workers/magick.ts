@@ -1,5 +1,4 @@
 import {
-	ImageMagick,
 	initializeImageMagick,
 	MagickFormat,
 	MagickImage,
@@ -8,40 +7,58 @@ import {
 	type IMagickImage,
 } from "@imagemagick/magick-wasm";
 import { makeZip } from "client-zip";
-import wasm from "@imagemagick/magick-wasm/magick.wasm?url";
-import { parseAni } from "$lib/parse/ani";
+import { parseAni } from "$lib/util/parse/ani";
 import { parseIcns } from "vert-wasm";
+import type { WorkerMessage } from "$lib/types";
 
-const magickPromise = initializeImageMagick(new URL(wasm, import.meta.url));
+let magickInitialized = false;
 
-magickPromise
-	.then(() => {
-		postMessage({ type: "loaded" });
-	})
-	.catch((error) => {
-		postMessage({ type: "error", error });
-	});
+self.postMessage({ type: "ready", id: "0" });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const handleMessage = async (message: any): Promise<any> => {
+const handleMessage = async (
+	message: WorkerMessage,
+): Promise<Partial<WorkerMessage>> => {
 	switch (message.type) {
+		case "load": {
+			try {
+				if (!message.wasm || !(message.wasm instanceof ArrayBuffer)) {
+					throw new Error(
+						`Invalid WASM data: ${typeof message.wasm}`,
+					);
+				}
+
+				const wasmBytes = new Uint8Array(message.wasm);
+
+				await initializeImageMagick(wasmBytes);
+				magickInitialized = true;
+				return { type: "loaded" };
+			} catch (error) {
+				return {
+					type: "error",
+					error: `error loading magick-wasm: ${(error as Error).message}`,
+				};
+			}
+		}
 		case "convert": {
+			if (!magickInitialized) {
+				return { type: "error", error: "magick-wasm not initialized" };
+			}
+
+			const compression: number | undefined =
+				message.compression ?? undefined;
+			const keepMetadata: boolean = message.keepMetadata ?? true;
 			if (!message.to.startsWith(".")) message.to = `.${message.to}`;
 			message.to = message.to.toLowerCase();
-			if (message.to === ".jfif") {
-				message.to = ".jpeg";
-			}
+			if (message.to === ".jfif") message.to = ".jpeg";
 
-			if (message.input.from === ".jfif") {
-				message.input.from = ".jpeg";
-			}
+			let from = message.input.from;
+			if (from === ".jfif") from = ".jpeg";
+			if (from === ".fit") from = ".fits";
 
 			const buffer = await message.input.file.arrayBuffer();
-			// only wait when we need to
-			await magickPromise;
 
 			// special ico handling to split them all into separate images
-			if (message.input.from === ".ico") {
+			if (from === ".ico") {
 				const imgs = MagickImageCollection.create();
 
 				while (true) {
@@ -70,7 +87,12 @@ const handleMessage = async (message: any): Promise<any> => {
 				const convertedImgs: Uint8Array[] = [];
 				await Promise.all(
 					imgs.map(async (img, i) => {
-						const output = await magickConvert(img, message.to);
+						const output = await magickConvert(
+							img,
+							message.to,
+							keepMetadata,
+							compression,
+						);
 						convertedImgs[i] = output;
 					}),
 				);
@@ -78,7 +100,10 @@ const handleMessage = async (message: any): Promise<any> => {
 				const zip = makeZip(
 					convertedImgs.map(
 						(img, i) =>
-							new File([img], `image${i}.${message.to.slice(1)}`),
+							new File(
+								[new Uint8Array(img)],
+								`image${i}.${message.to.slice(1)}`,
+							),
 					),
 					"images.zip",
 				);
@@ -93,7 +118,7 @@ const handleMessage = async (message: any): Promise<any> => {
 					output: zipBytes,
 					zip: true,
 				};
-			} else if (message.input.from === ".ani") {
+			} else if (from === ".ani") {
 				console.log("Parsing ANI file");
 				try {
 					const parsedAni = parseAni(new Uint8Array(buffer));
@@ -108,9 +133,14 @@ const handleMessage = async (message: any): Promise<any> => {
 									}),
 								),
 								message.to,
+								keepMetadata,
+								compression,
 							);
 							files.push(
-								new File([blob], `image${i}${message.to}`),
+								new File(
+									[new Uint8Array(blob)],
+									`image${i}${message.to}`,
+								),
 							);
 						}),
 					);
@@ -126,7 +156,7 @@ const handleMessage = async (message: any): Promise<any> => {
 				} catch (e) {
 					console.error(e);
 				}
-			} else if (message.input.from === ".icns") {
+			} else if (from === ".icns") {
 				const icns: Uint8Array[] = parseIcns(new Uint8Array(buffer));
 				if (typeof icns === "string") {
 					return {
@@ -154,6 +184,8 @@ const handleMessage = async (message: any): Promise<any> => {
 							const converted = await magickConvert(
 								img,
 								message.to,
+								keepMetadata,
+								compression,
 							);
 							outputs.push(converted);
 							break;
@@ -167,11 +199,15 @@ const handleMessage = async (message: any): Promise<any> => {
 				const zip = makeZip(
 					outputs.map(
 						(img, i) =>
-							new File([img], `image${i}.${message.to.slice(1)}`),
+							new File(
+								[new Uint8Array(img)],
+								`image${i}.${message.to.slice(1)}`,
+							),
 					),
 					"images.zip",
 				);
 				const zipBytes = await readToEnd(zip.getReader());
+
 				return {
 					type: "finished",
 					output: zipBytes,
@@ -179,22 +215,56 @@ const handleMessage = async (message: any): Promise<any> => {
 				};
 			}
 
+			// build frames of animated formats (webp/gif)
+			// APNG does not work on magick-wasm since it needs ffmpeg built-in (not in magick-wasm) - handle in ffmpeg
+			if (
+				(from === ".webp" || from === ".gif") &&
+				(message.to === ".gif" || message.to === ".webp")
+			) {
+				const collection = MagickImageCollection.create(
+					new Uint8Array(buffer),
+				);
+				const format =
+					message.to === ".gif"
+						? MagickFormat.Gif
+						: MagickFormat.WebP;
+				const result = await new Promise<Uint8Array>((resolve) => {
+					collection.write(format, (output) => {
+						resolve(structuredClone(output));
+					});
+				});
+				collection.dispose();
+
+				return {
+					type: "finished",
+					output: result,
+				};
+			}
+
 			const img = MagickImage.create(
 				new Uint8Array(buffer),
 				new MagickReadSettings({
-					format: message.input.from
-						.slice(1)
-						.toUpperCase() as MagickFormat,
+					format: from.slice(1).toUpperCase() as MagickFormat,
 				}),
 			);
 
-			const converted = await magickConvert(img, message.to);
+			const converted = await magickConvert(
+				img,
+				message.to,
+				keepMetadata,
+				compression,
+			);
 
 			return {
 				type: "finished",
 				output: converted,
 			};
 		}
+		default:
+			return {
+				type: "error",
+				error: `Unknown message type: ${message.type}`,
+			};
 	}
 };
 
@@ -206,78 +276,50 @@ const readToEnd = async (reader: ReadableStreamDefaultReader<Uint8Array>) => {
 		if (value) chunks.push(value);
 		done = d;
 	}
-	const blob = new Blob(chunks, { type: "application/zip" });
+	const blob = new Blob(
+		chunks.map((chunk) => new Uint8Array(chunk)),
+		{ type: "application/zip" },
+	);
 	const arrayBuffer = await blob.arrayBuffer();
 	return new Uint8Array(arrayBuffer);
 };
 
-const magickToBlob = async (img: IMagickImage): Promise<Blob> => {
-	const canvas = new OffscreenCanvas(img.width, img.height);
-	return new Promise<Blob>((resolve, reject) =>
-		img.getPixels(async (p) => {
-			// const area = p.getArea(0, 0, img.width, img.height);
-			// const chunkSize = img.hasAlpha ? 4 : 3;
-			// const chunks = Math.ceil(area.length / chunkSize);
-			// const data = new Uint8ClampedArray(chunks * 4);
-
-			// for (let j = 0, k = 0; j < area.length; j += chunkSize, k += 4) {
-			// 	data[k] = area[j];
-			// 	data[k + 1] = area[j + 1];
-			// 	data[k + 2] = area[j + 2];
-			// 	data[k + 3] = img.hasAlpha ? area[j + 3] : 255;
-			// }
-
-			// const ctx = canvas.getContext("2d");
-			// if (!ctx) {
-			// 	reject(new Error("Failed to get canvas context"));
-			// 	return;
-			// }
-
-			// console.log(img.width, img.height);
-
-			// console.log(data.length, img.width * img.height * 4);
-
-			// ctx.putImageData(new ImageData(data, img.width, img.height), 0, 0);
-
-			// const blob = await canvas.convertToBlob({
-			// 	type: "image/png",
-			// });
-
-			const data = p.toByteArray(0, 0, img.width, img.height, "RGBA");
-			const ctx = canvas.getContext("2d");
-			if (!ctx) {
-				reject(new Error("Failed to get canvas context"));
-				return;
-			}
-
-			const imageData = new ImageData(
-				new Uint8ClampedArray(data?.buffer || new ArrayBuffer(0)),
-				img.width,
-				img.height,
-			);
-
-			ctx.putImageData(imageData, 0, 0);
-			const blob = await canvas.convertToBlob({
-				type: "image/png",
-			});
-
-			resolve(blob);
-		}),
-	);
-};
-
-const magickConvert = async (img: IMagickImage, to: string) => {
-	const intermediary = await magickToBlob(img);
-	const buf = new Uint8Array(await intermediary.arrayBuffer());
+const magickConvert = async (
+	img: IMagickImage,
+	to: string,
+	keepMetadata: boolean,
+	compression?: number,
+) => {
 	let fmt = to.slice(1).toUpperCase();
 	if (fmt === "JFIF") fmt = "JPEG";
 
-	const result = await new Promise<Uint8Array>((resolve) => {
-		ImageMagick.read(buf, MagickFormat.Png, (image) => {
-			image.write(fmt as unknown as MagickFormat, (o) => {
+	// ICO size clamp to avoid WidthOrHeightExceedsLimit
+	if (fmt === "ICO") {
+		const max = 256;
+		const w = img.width;
+		const h = img.height;
+
+		if (w > max || h > max) {
+			const scale = max / Math.max(w, h);
+			const newW = Math.max(1, Math.round(w * scale));
+			const newH = Math.max(1, Math.round(h * scale));
+
+			img.resize(newW, newH);
+		}
+	}
+
+	const result = await new Promise<Uint8Array>((resolve, reject) => {
+		try {
+			// magick-wasm automatically clamps (https://github.com/dlemstra/magick-wasm/blob/76fc6f2b0c0497d2ddc251bbf6174b4dc92ac3ea/src/magick-image.ts#L2480)
+			if (compression) img.quality = compression;
+			if (!keepMetadata) img.strip();
+
+			img.write(fmt as unknown as MagickFormat, (o: Uint8Array) => {
 				resolve(structuredClone(o));
 			});
-		});
+		} catch (error) {
+			reject(error);
+		}
 	});
 
 	return result;

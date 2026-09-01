@@ -1,7 +1,12 @@
 <script lang="ts">
 	import Panel from "$lib/components/visual/Panel.svelte";
 	import { HeartHandshakeIcon } from "lucide-svelte";
-	import { GITHUB_URL_VERT } from "$lib/consts";
+	import {
+		DISABLE_ALL_EXTERNAL_REQUESTS,
+		GITHUB_URL_VERT,
+	} from "$lib/util/consts";
+	import { m } from "$lib/paraglide/messages";
+	import { link, sanitize } from "$lib/store/index.svelte";
 
 	let { mainContribs, notableContribs, ghContribs } = $props();
 </script>
@@ -51,12 +56,11 @@
 		<div class="rounded-full bg-blue-300 p-2 inline-block mr-3 w-10 h-10">
 			<HeartHandshakeIcon color="black" />
 		</div>
-		Credits
+		{m["about.credits.title"]()}
 	</h2>
 
 	<p class="-mt-4 -mb-3 font-black text-lg">
-		If you would like to contact the development team, please use the email
-		found on the "Resources" card.
+		{m["about.credits.contact_team"]()}
 	</p>
 
 	<!-- Main contributors -->
@@ -72,11 +76,12 @@
 	<!-- Notable contributors -->
 	<div class="flex flex-col gap-4">
 		<div class="flex flex-col gap-1">
-			<h2 class="text-base font-bold">Notable contributors</h2>
+			<h2 class="text-base font-bold">
+				{m["about.credits.notable_contributors"]()}
+			</h2>
 			<div class="flex flex-col gap-2">
 				<p class="text-base text-muted font-normal">
-					We'd like to thank these people for their major
-					contributions to VERT.
+					{m["about.credits.notable_description"]()}
 				</p>
 				<div class="flex flex-col gap-2">
 					{#each notableContribs as contrib}
@@ -88,56 +93,51 @@
 		</div>
 
 		<!-- GitHub contributors -->
-		<div class="flex flex-col gap-4">
-			<div class="flex flex-col gap-1">
-				<h2 class="text-base font-bold">GitHub contributors</h2>
+		{#if !DISABLE_ALL_EXTERNAL_REQUESTS}
+			<div class="flex flex-col gap-4">
+				<div class="flex flex-col gap-1">
+					<h2 class="text-base font-bold">
+						{m["about.credits.github_contributors"]()}
+					</h2>
+					{#if ghContribs && ghContribs.length > 0}
+						<p class="text-base text-muted font-normal">
+							{@html sanitize(
+								link(
+									"github_link",
+									m["about.credits.github_description"](),
+									GITHUB_URL_VERT,
+									true,
+								),
+							)}
+						</p>
+					{:else}
+						<p class="text-base text-muted font-normal italic">
+							{@html sanitize(
+								link(
+									"contribute_link",
+									m["about.credits.no_contributors"](),
+									GITHUB_URL_VERT,
+									true,
+								),
+							)}
+						</p>
+					{/if}
+				</div>
+
 				{#if ghContribs && ghContribs.length > 0}
-					<p class="text-base text-muted font-normal">
-						Big <a
-							class="text-black dynadark:text-white"
-							href="/jpegify">thanks</a
-						>
-						to all these people for helping out!
-						<a
-							class="text-blue-500 font-normal hover:underline"
-							href={GITHUB_URL_VERT}
-							target="_blank"
-							rel="noopener noreferrer"
-						>
-							Want to help too?
-						</a>
-					</p>
-				{:else}
-					<p class="text-base text-muted font-normal italic">
-						Seems like no one has contributed yet...
-						<a
-							class="text-blue-500 font-normal hover:underline"
-							href={GITHUB_URL_VERT}
-							target="_blank"
-							rel="noopener noreferrer"
-						>
-							be the first to contribute!
-						</a>
-					</p>
+					<div class="flex flex-row flex-wrap gap-2">
+						{#each ghContribs as contrib}
+							{@const { name, github, avatar } = contrib}
+							{@render contributor(name, github, avatar)}
+						{/each}
+					</div>
 				{/if}
 			</div>
 
-			{#if ghContribs && ghContribs.length > 0}
-				<div class="flex flex-row flex-wrap gap-2">
-					{#each ghContribs as contrib}
-						{@const { name, github, avatar } = contrib}
-						{@render contributor(name, github, avatar)}
-					{/each}
-				</div>
-			{/if}
-
-			<h2 class="mt-2 -mb-2">Libraries</h2>
+			<h2 class="mt-2 -mb-2">{m["about.credits.libraries"]()}</h2>
 			<p class="font-normal">
-				A big thanks to FFmpeg (audio, video), Imagemagick (images) and
-				Pandoc (documents) for maintaining such excellent libraries for
-				so many years. VERT relies on them to provide you with your
-				conversions.
+				{m["about.credits.libraries_description"]()}
 			</p>
-		</div>
-	</div></Panel
->
+		{/if}
+	</div>
+</Panel>

@@ -1,45 +1,44 @@
 <script lang="ts">
 	import Panel from "$lib/components/visual/Panel.svelte";
-	import { GITHUB_URL_VERTD } from "$lib/consts";
+	import { GITHUB_URL_VERTD } from "$lib/util/consts";
 	import { ServerIcon } from "lucide-svelte";
 	import type { ISettings } from "./index.svelte";
 	import clsx from "clsx";
 	import Dropdown from "$lib/components/functional/Dropdown.svelte";
 	import { vertdLoaded } from "$lib/store/index.svelte";
+	import { m } from "$lib/paraglide/messages";
+	import { link, sanitize } from "$lib/store/index.svelte";
+	import { VertdInstance, type VertdInner } from "./vertdSettings.svelte";
 
 	let vertdCommit = $state<string | null>(null);
 	let abortController: AbortController | null = null;
 
-	const { settings }: { settings: ISettings } = $props();
+	const { settings = $bindable() }: { settings: ISettings } = $props();
 
 	$effect(() => {
-		if (settings.vertdURL) {
-			if (abortController) abortController.abort();
-			abortController = new AbortController();
-			const { signal } = abortController;
+		if (abortController) abortController.abort();
+		abortController = new AbortController();
+		const { signal } = abortController;
 
-			vertdCommit = "loading";
-			fetch(`${settings.vertdURL}/api/version`, { signal })
-				.then((res) => {
-					if (!res.ok) throw new Error("bad response");
+		vertdCommit = "loading";
+		VertdInstance.instance
+			.url()
+			.then((u) => fetch(`${u}/api/version`, { signal }))
+			.then((res) => {
+				if (!res.ok) throw new Error("bad response");
+				vertdLoaded.set(false);
+				return res.json();
+			})
+			.then((data) => {
+				vertdCommit = data.data;
+				vertdLoaded.set(true);
+			})
+			.catch((err) => {
+				if (err.name !== "AbortError") {
+					vertdCommit = null;
 					vertdLoaded.set(false);
-					return res.json();
-				})
-				.then((data) => {
-					vertdCommit = data.data;
-					vertdLoaded.set(true);
-				})
-				.catch((err) => {
-					if (err.name !== "AbortError") {
-						vertdCommit = null;
-						vertdLoaded.set(false);
-					}
-				});
-		} else {
-			if (abortController) abortController.abort();
-			vertdCommit = null;
-			vertdLoaded.set(false);
-		}
+				}
+			});
 
 		return () => {
 			if (abortController) abortController.abort();
@@ -55,7 +54,7 @@
 				class="inline-block -mt-1 mr-2 bg-accent-red p-2 rounded-full overflow-visible"
 				color="black"
 			/>
-			Video conversion
+			{m["settings.vertd.title"]()}
 		</h2>
 		<p
 			class={clsx("text-sm font-normal", {
@@ -64,90 +63,139 @@
 				"!text-muted": vertdCommit === "loading",
 			})}
 		>
-			status: {vertdCommit
+			{m["settings.vertd.status"]()}
+			{vertdCommit
 				? vertdCommit === "loading"
-					? "loading..."
-					: `available, commit id ${vertdCommit}`
-				: "unavailable (is the url right?)"}
+					? m["settings.vertd.loading"]()
+					: m["settings.vertd.available"]({ commitId: vertdCommit })
+				: m["settings.vertd.unavailable"]()}
 		</p>
 		<div class="flex flex-col gap-8">
 			<div class="flex flex-col gap-4">
 				<p class="text-sm text-muted font-normal">
-					The <code>vertd</code> project is a server wrapper for FFmpeg.
-					This allows you to convert videos through the convenience of
-					VERT's web interface, while still being able to harness the power
-					of your GPU to do it as quickly as possible.
+					{@html sanitize(m["settings.vertd.description"]())}
 				</p>
 				<p class="text-sm text-muted font-normal">
-					We host a public instance for your convenience, but it is
-					quite easy to host your own on your PC or server if you know
-					what you are doing. You can download the server binaries <a
-						href={GITHUB_URL_VERTD}
-						target="_blank">here</a
-					> - the process of setting this up will become easier in the
-					future, so stay tuned!
+					{@html sanitize(link(
+						"vertd_link",
+						m["settings.vertd.hosting_info"](),
+						GITHUB_URL_VERTD,
+					))}
 				</p>
 				<div class="flex flex-col gap-2">
-					<p class="text-base font-bold">Instance URL</p>
-					<input
-						type="text"
-						placeholder="Example: http://localhost:24153"
-						bind:value={settings.vertdURL}
+					<p class="text-base font-bold">
+						{m["settings.vertd.instance"]()}
+					</p>
+					<Dropdown
+						options={[
+							m["settings.vertd.auto_instance"](),
+							m["settings.vertd.eu_instance"](),
+							m["settings.vertd.us_instance"](),
+							m["settings.vertd.custom_instance"](),
+						]}
+						onselect={(selected) => {
+							let inner: VertdInner;
+							switch (selected) {
+								case m["settings.vertd.auto_instance"]():
+									inner = { type: "auto" };
+									break;
+								case m["settings.vertd.eu_instance"]():
+									inner = { type: "eu" };
+									break;
+								case m["settings.vertd.us_instance"]():
+									inner = { type: "us" };
+									break;
+								case m["settings.vertd.custom_instance"]():
+									inner = {
+										type: "custom",
+									};
+									break;
+								default:
+									inner = { type: "auto" };
+							}
+							VertdInstance.instance.set(inner);
+						}}
+						selected={(() => {
+							switch (VertdInstance.instance.innerData().type) {
+								case "auto":
+									return m["settings.vertd.auto_instance"]();
+								case "eu":
+									return m["settings.vertd.eu_instance"]();
+								case "us":
+									return m["settings.vertd.us_instance"]();
+								case "custom":
+									return m[
+										"settings.vertd.custom_instance"
+									]();
+							}
+						})()}
+						settingsStyle
 					/>
+					{#if VertdInstance.instance.innerData().type === "custom"}
+						<input
+							type="text"
+							placeholder={m["settings.vertd.url_placeholder"]()}
+							bind:value={settings.vertdURL}
+						/>
+					{/if}
 				</div>
 				<div class="flex flex-col gap-4">
 					<div class="flex flex-col gap-2">
-						<p class="text-base font-bold">Conversion speed</p>
+						<p class="text-base font-bold">
+							{m["settings.vertd.conversion_speed"]()}
+						</p>
 						<p class="text-sm text-muted font-normal">
-							This describes the tradeoff between speed and
-							quality. Faster speeds will result in lower quality,
-							but will get the job done quicker.
+							{m["settings.vertd.speed_description"]()}
 						</p>
 					</div>
 					<Dropdown
 						options={[
-							"Very Slow",
-							"Slower",
-							"Slow",
-							"Medium",
-							"Fast",
-							"Ultra Fast",
+							m["settings.vertd.speeds.very_slow"](),
+							m["settings.vertd.speeds.slower"](),
+							m["settings.vertd.speeds.slow"](),
+							m["settings.vertd.speeds.medium"](),
+							m["settings.vertd.speeds.fast"](),
+							m["settings.vertd.speeds.ultra_fast"](),
 						]}
 						settingsStyle
 						selected={(() => {
 							switch (settings.vertdSpeed) {
 								case "verySlow":
-									return "Very Slow";
+									return m[
+										"settings.vertd.speeds.very_slow"
+									]();
 								case "slower":
-									return "Slower";
+									return m["settings.vertd.speeds.slower"]();
 								case "slow":
-									return "Slow";
+									return m["settings.vertd.speeds.slow"]();
 								case "medium":
-									return "Medium";
+									return m["settings.vertd.speeds.medium"]();
 								case "fast":
-									return "Fast";
+									return m["settings.vertd.speeds.fast"]();
 								case "ultraFast":
-									return "Ultra Fast";
+									return m[
+										"settings.vertd.speeds.ultra_fast"
+									]();
 							}
 						})()}
 						onselect={(selected) => {
 							switch (selected) {
-								case "Very Slow":
+								case m["settings.vertd.speeds.very_slow"]():
 									settings.vertdSpeed = "verySlow";
 									break;
-								case "Slower":
+								case m["settings.vertd.speeds.slower"]():
 									settings.vertdSpeed = "slower";
 									break;
-								case "Slow":
+								case m["settings.vertd.speeds.slow"]():
 									settings.vertdSpeed = "slow";
 									break;
-								case "Medium":
+								case m["settings.vertd.speeds.medium"]():
 									settings.vertdSpeed = "medium";
 									break;
-								case "Fast":
+								case m["settings.vertd.speeds.fast"]():
 									settings.vertdSpeed = "fast";
 									break;
-								case "Ultra Fast":
+								case m["settings.vertd.speeds.ultra_fast"]():
 									settings.vertdSpeed = "ultraFast";
 									break;
 							}

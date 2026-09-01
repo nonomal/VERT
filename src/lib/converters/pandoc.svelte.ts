@@ -1,43 +1,79 @@
-import { VertFile } from "$lib/types";
+import { VertFile, type WorkerMessage } from "$lib/types";
 import { Converter, FormatInfo } from "./converter.svelte";
 import { browser } from "$app/environment";
 import PandocWorker from "$lib/workers/pandoc?worker&url";
+import { error, log } from "$lib/util/logger";
+import { ToastManager } from "$lib/util/toast.svelte";
+import { m } from "$lib/paraglide/messages";
 
 export class PandocConverter extends Converter {
 	public name = "pandoc";
 	public ready = $state(false);
 	public wasm: ArrayBuffer = null!;
 
+	private activeConversions = new Map<string, Worker>();
+
 	constructor() {
 		super();
 		if (!browser) return;
 		(async () => {
-			this.wasm = await fetch("/pandoc.wasm").then((r) =>
-				r.arrayBuffer(),
-			);
-			this.ready = true;
+			try {
+				this.status = "downloading";
+				this.wasm = await fetch("/pandoc.wasm").then((r) =>
+					r.arrayBuffer(),
+				);
+
+				this.status = "ready";
+			} catch (err) {
+				this.status = "error";
+				error(
+					["converters", this.name],
+					`Failed to load Pandoc worker: ${err}`,
+				);
+				ToastManager.add({
+					type: "error",
+					message: m["workers.errors.pandoc"](),
+				});
+			}
 		})();
 	}
 
-	public async convert(input: VertFile, to: string): Promise<VertFile> {
+	public async convert(file: VertFile, to: string): Promise<VertFile> {
 		const worker = new Worker(PandocWorker, {
 			type: "module",
 		});
-		worker.postMessage({ type: "load", wasm: this.wasm });
+
+		this.activeConversions.set(file.id, worker);
+
+		const loadMsg: WorkerMessage = {
+			type: "load",
+			wasm: this.wasm,
+			id: file.id,
+		};
+		worker.postMessage(loadMsg);
 		await waitForMessage(worker, "loaded");
-		worker.postMessage({
+		const convertMsg: WorkerMessage = {
 			type: "convert",
 			to,
-			file: input.file,
-		});
+			input: {
+				file: file.file,
+				name: file.name,
+				from: file.from,
+				to,
+			},
+			compression: null,
+			id: file.id,
+		};
+		worker.postMessage(convertMsg);
 		const result = await waitForMessage(worker);
 		if (result.type === "error") {
 			worker.terminate();
 			// throw new Error(result.error);
+			const error = result.error.toString();
 			switch (result.errorKind) {
 				case "PandocUnknownReaderError": {
 					throw new Error(
-						`${input.from} is not a supported input format for documents.`,
+						`${file.from} is not a supported input format for documents.`,
 					);
 				}
 
@@ -47,6 +83,15 @@ export class PandocConverter extends Converter {
 					);
 				}
 
+				case "PandocParseError": {
+					if (error.includes("JSON missing pandoc-api-version")) {
+						throw new Error(
+							`This JSON file is not a pandoc-converted JSON file. It must be converted with pandoc / VERT to be converted again.`,
+						);
+					}
+				}
+
+				// eslint-disable-next-line no-fallthrough
 				default:
 					if (result.errorKind)
 						throw new Error(
@@ -55,24 +100,44 @@ export class PandocConverter extends Converter {
 					else throw new Error(result.error);
 			}
 		}
-		worker.terminate();
+
 		if (!to.startsWith(".")) to = `.${to}`;
+		this.activeConversions.delete(file.id);
+		worker.terminate();
 		return new VertFile(
-			new File([result.output], input.name),
+			new File([result.output], file.name),
 			result.isZip ? ".zip" : to,
 		);
 	}
 
+	public async cancel(input: VertFile): Promise<void> {
+		const worker = this.activeConversions.get(input.id);
+		if (!worker) {
+			error(
+				["converters", this.name],
+				`no active conversion found for file ${input.name}`,
+			);
+			return;
+		}
+
+		log(
+			["converters", this.name],
+			`cancelling conversion for file ${input.name}`,
+		);
+
+		worker.terminate();
+		this.activeConversions.delete(input.id);
+	}
+
 	public supportedFormats = [
 		new FormatInfo("docx", true, true),
-		new FormatInfo("xml", true, true),
 		new FormatInfo("doc", true, true),
 		new FormatInfo("md", true, true),
 		new FormatInfo("html", true, true),
 		new FormatInfo("rtf", true, true),
 		new FormatInfo("csv", true, true),
 		new FormatInfo("tsv", true, true),
-		new FormatInfo("json", true, true),
+		new FormatInfo("json", true, true), // must be a pandoc-converted json
 		new FormatInfo("rst", true, true),
 		new FormatInfo("epub", true, true),
 		new FormatInfo("odt", true, true),

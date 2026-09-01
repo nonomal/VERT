@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { error, log } from "$lib/logger";
+	import { error } from "$lib/util/logger";
 	import * as About from "$lib/sections/about";
 	import { InfoIcon } from "lucide-svelte";
 	import { onMount } from "svelte";
@@ -8,10 +8,10 @@
 	import avatarJovannMC from "$lib/assets/avatars/jovannmc.jpg";
 	import avatarRealmy from "$lib/assets/avatars/realmy.jpg";
 	import avatarAzurejelly from "$lib/assets/avatars/azurejelly.jpg";
-	import { GITHUB_API_URL } from "$lib/consts";
-	import { addToast } from "$lib/store/ToastProvider";
-	import { dev } from "$app/environment";
-	import { page } from "$app/state";
+	import { PUB_DONATION_URL, PUB_STRIPE_KEY } from "$env/static/public";
+	import { DISABLE_ALL_EXTERNAL_REQUESTS, GITHUB_API_URL } from "$lib/util/consts";
+	import { m } from "$lib/paraglide/messages";
+	import { ToastManager } from "$lib/util/toast.svelte";
 	// import { dev } from "$app/environment";
 	// import { page } from "$app/state";
 
@@ -34,19 +34,19 @@
 		{
 			name: "nullptr",
 			github: "https://github.com/not-nullptr",
-			role: "Lead developer; conversion backend, UI implementation",
+			role: m["about.credits.roles.lead_developer"](),
 			avatar: avatarNullptr,
 		},
 		{
 			name: "JovannMC",
 			github: "https://github.com/JovannMC",
-			role: "Developer; UI implementation",
+			role: m["about.credits.roles.developer"](),
 			avatar: avatarJovannMC,
 		},
 		{
 			name: "Liam",
 			github: "https://x.com/z2rMC",
-			role: "Designer; UX, branding, marketing",
+			role: m["about.credits.roles.designer"](),
 			avatar: avatarLiam,
 		},
 	];
@@ -55,13 +55,13 @@
 		{
 			name: "azurejelly",
 			github: "https://github.com/azurejelly",
-			role: "Maintaining Docker & CI support",
+			role: m["about.credits.roles.docker_ci"](),
 			avatar: avatarAzurejelly,
 		},
 		{
 			name: "Realmy",
 			github: "https://github.com/RealmyTheMan",
-			role: "Former co-founder & designer",
+			role: m["about.credits.roles.former_cofounder"](),
 			avatar: avatarRealmy,
 		},
 	];
@@ -69,6 +69,10 @@
 	let ghContribs: Contributor[] = [];
 
 	onMount(async () => {
+		if (DISABLE_ALL_EXTERNAL_REQUESTS) {
+			return;
+		}
+
 		// Check if the data is already in sessionStorage
 		const cachedContribs = sessionStorage.getItem("ghContribs");
 		if (cachedContribs) {
@@ -80,7 +84,10 @@
 		try {
 			const response = await fetch(`${GITHUB_API_URL}/contributors`);
 			if (!response.ok) {
-				addToast("error", "Error fetching GitHub contributors");
+				ToastManager.add({
+					type: "error",
+					message: m["about.errors.github_contributors"](),
+				});
 				throw new Error(`HTTP error, status: ${response.status}`);
 			}
 			const allContribs = await response.json();
@@ -89,6 +96,7 @@
 			const excludedNames = new Set([
 				...mainContribs.map((c) => c.github.split("/").pop()),
 				...notableContribs.map((c) => c.github.split("/").pop()),
+				"Z2r-YT",
 			]);
 
 			const filteredContribs = allContribs.filter(
@@ -129,13 +137,15 @@
 		}
 	});
 
-	const donationsEnabled = dev || page.url.origin.endsWith("//vert.sh");
+	const donationsEnabled = PUB_STRIPE_KEY
+		&& PUB_DONATION_URL
+		&& !DISABLE_ALL_EXTERNAL_REQUESTS;
 </script>
 
 <div class="flex flex-col h-full items-center">
 	<h1 class="hidden md:block text-[40px] tracking-tight leading-[72px] mb-6">
 		<InfoIcon size="40" class="inline-block -mt-2 mr-2" />
-		About
+		{m["about.title"]()}
 	</h1>
 
 	<div

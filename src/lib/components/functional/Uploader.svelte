@@ -7,33 +7,16 @@
 	import { converters } from "$lib/converters";
 	import { goto } from "$app/navigation";
 	import { page } from "$app/state";
+	import { m } from "$lib/paraglide/messages";
 
 	type Props = {
 		class?: string;
-		jpegify?: boolean;
 	};
 
-	const { class: classList, jpegify }: Props = $props();
+	const { class: classList }: Props = $props();
 
 	let uploaderButton = $state<HTMLButtonElement>();
 	let fileInput = $state<HTMLInputElement>();
-
-	let acceptedTypes = $state<string>();
-
-	const setupFileInput = async () => {
-		if (!fileInput) return;
-
-		const filteredConverters = (
-			await Promise.all(
-				converters.map(async (c) => {
-					if (await c.valid()) return c;
-				}),
-			)
-		).filter((c) => typeof c !== "undefined");
-		acceptedTypes = filteredConverters
-			.map((c) => c.formatStrings((f) => f.fromSupported).join(","))
-			.join(",");
-	};
 
 	const uploadFiles = async () => {
 		if (!fileInput) return;
@@ -42,13 +25,9 @@
 
 	const handleFileChange = (e: Event) => {
 		if (!fileInput) return;
-		if (page.url.pathname !== "/jpegify/") {
-			const oldLength = files.files.length;
-			files.add(fileInput.files);
-			if (oldLength !== files.files.length) goto("/convert");
-		} else {
-			files.add(fileInput.files);
-		}
+		const oldLength = files.files.length;
+		files.add(fileInput.files);
+		if (oldLength !== files.files.length) goto("/convert");
 	};
 
 	onMount(() => {
@@ -61,8 +40,6 @@
 		uploaderButton?.addEventListener("dragenter", handler);
 		uploaderButton?.addEventListener("dragleave", handler);
 		uploaderButton?.addEventListener("drop", handler);
-
-		void setupFileInput();
 
 		return () => {
 			uploaderButton?.removeEventListener("dragover", handler);
@@ -79,7 +56,6 @@
 	multiple
 	class="hidden"
 	onchange={handleFileChange}
-	accept={acceptedTypes}
 />
 
 <button
@@ -98,7 +74,9 @@
 			<UploadIcon class="w-full h-full text-on-accent" />
 		</div>
 		<h2 class="text-center text-2xl font-semibold mt-4">
-			Drop or click to {jpegify ? "JPEGIFY" : "convert"}
+			{m["upload.uploader.text"]({
+				action: m["upload.uploader.convert"]()
+			})}
 		</h2>
 	</Panel>
 </button>

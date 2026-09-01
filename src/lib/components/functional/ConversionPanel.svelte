@@ -7,6 +7,7 @@
 	import ProgressBar from "../visual/ProgressBar.svelte";
 	import FormatDropdown from "./FormatDropdown.svelte";
 	import { categories } from "$lib/converters";
+	import { m } from "$lib/paraglide/messages";
 
 	const length = $derived(files.files.length);
 	const progress = $derived(files.files.filter((f) => f.result).length);
@@ -23,21 +24,21 @@
 				onclick={() => files.convertAll()}
 				class="btn {$effects
 					? ''
-					: '!scale-100'} highlight flex gap-3 max-md:w-full"
+					: '!scale-100'} highlight flex gap-3 max-md:w-full md:max-w-[15.5rem]"
 				disabled={!files.ready}
 			>
 				<RefreshCw size="24" />
-				<p>Convert all</p>
+				<p>{m["convert.panel.convert_all"]()}</p>
 			</button>
 			<button
 				class="btn {$effects
 					? ''
-					: '!scale-100'} flex gap-3 max-md:w-full"
+					: '!scale-100'} flex gap-3 max-md:w-full md:max-w-[15.5rem]"
 				disabled={!files.ready || !files.results}
 				onclick={() => files.downloadAll()}
 			>
 				<FolderArchiveIcon size="24" />
-				<p>Download all as .zip</p>
+				<p>{m["convert.panel.download_all"]()}</p>
 			</button>
 			{#if $isMobile}
 				<button
@@ -48,10 +49,13 @@
 					onclick={() => (files.files = [])}
 				>
 					<Trash2Icon size="24" />
-					<p>Remove all files</p>
+					<p>{m["convert.panel.remove_all"]()}</p>
 				</button>
 			{:else}
-				<Tooltip text="Remove all files" position="right">
+				<Tooltip
+					text={m["convert.panel.remove_all"]()}
+					position="right"
+				>
 					<button
 						class="btn p-4 {$effects
 							? ''
@@ -66,31 +70,38 @@
 		</div>
 		<div class="w-full bg-separator h-0.5 flex md:hidden"></div>
 		<div class="flex items-center gap-2">
-			<p class="whitespace-nowrap text-xl">Set all to</p>
-			{#if files.requiredConverters.length === 1}
-				<FormatDropdown
-					onselect={(r) =>
-						files.files.forEach((f) => {
-							if (f.from !== r) {
+			<p class="whitespace-normal text-xl text-right w-full">
+				{m["convert.panel.set_all_to"]()}
+			</p>
+			<div class="w-48 md:max-w-[6.5rem]">
+				<!-- check if all files have the same converters -->
+				<!-- video and audio together still have this dropdown disabled because audio has just ffmpeg (video has vertd & ffmpeg), even tho it can convert between video and audio  -->
+				{#if files.files.length > 0 && files.files.every((f) => f.converters.length) && files.files.every((f) => JSON.stringify(f.converters) === JSON.stringify(files.files[0].converters))}
+					<FormatDropdown
+						onselect={(r) =>
+							files.files.forEach((f) => {
 								f.to = r;
 								f.result = null;
-							}
-						})}
-					{categories}
-				/>
-			{:else}
-				<Dropdown options={["N/A"]} disabled />
-			{/if}
-		</div>
-	</div>
-	{#if files.files.length > 50}
-		<div class="w-full px-2 flex gap-4 items-center">
-			<div class="flex-shrink-0 -mt-0.5 font-normal text-sm text-muted">
-				{progress}/{length}
-			</div>
-			<div class="flex-grow">
-				<ProgressBar min={0} max={length} {progress} />
+							})}
+						{categories}
+						dropdownSize={"large"}
+					/>
+				{:else}
+					<Dropdown options={[m["convert.panel.na"]()]} disabled />
+				{/if}
 			</div>
 		</div>
-	{/if}
-</Panel>
+		{#if files.files.length > 50}
+			<div class="w-full px-2 flex gap-4 items-center">
+				<div
+					class="flex-shrink-0 -mt-0.5 font-normal text-sm text-muted"
+				>
+					{progress}/{length}
+				</div>
+				<div class="flex-grow">
+					<ProgressBar min={0} max={length} {progress} />
+				</div>
+			</div>
+		{/if}
+	</div></Panel
+>

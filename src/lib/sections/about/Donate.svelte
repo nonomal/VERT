@@ -8,26 +8,24 @@
 
 <script lang="ts">
 	import { goto } from "$app/navigation";
-
 	import { page } from "$app/state";
-
-	import {
-		PUB_DONATION_URL,
-		PUB_HOSTNAME,
-		PUB_STRIPE_KEY,
-	} from "$env/static/public";
+	import { PUB_DONATION_URL, PUB_STRIPE_KEY } from "$env/static/public";
+	// please do not change these!
+	const OFFICIAL_DONATION_URL = atob("aHR0cHM6Ly9kb25hdGlvbnMudmVydC5zaA==");
+	const OFFICIAL_STRIPE_KEY = atob(
+		"cGtfbGl2ZV81MVRsclBhRlRQamtoRUdCU3U1S3d5NWpKUVl4Y1g1eVVVSFhpSDVnN1h6dmIwTkt6RHFib29jMTI2SGpsVzM1dVVrZkFnUU4ycnVFb0N1eVF5bm94cEthQTAwb2pGZ1ExMTY=",
+	);
+	const isOfficial =
+		PUB_DONATION_URL === OFFICIAL_DONATION_URL &&
+		PUB_STRIPE_KEY === OFFICIAL_STRIPE_KEY;
 
 	// import { PUB_STRIPE_KEY, PUB_DONATION_API } from "$env/static/public";
-	import { fade } from "$lib/animation";
+	import { fade } from "$lib/util/animation";
 	import FancyInput from "$lib/components/functional/FancyInput.svelte";
 	import Panel from "$lib/components/visual/Panel.svelte";
-	import { effects } from "$lib/store/index.svelte";
-	import { addToast } from "$lib/store/ToastProvider";
-	import {
-		loadStripe,
-		type Stripe,
-		type StripeElements,
-	} from "@stripe/stripe-js";
+	import { effects, link, sanitize } from "$lib/store/index.svelte";
+	import { loadStripe } from "@stripe/stripe-js/pure";
+	import { type Stripe, type StripeElements } from "@stripe/stripe-js";
 	import clsx from "clsx";
 	import {
 		CalendarHeartIcon,
@@ -35,9 +33,12 @@
 		HeartIcon,
 		WalletIcon,
 	} from "lucide-svelte";
-	import { onMount, tick } from "svelte";
+	import { onMount } from "svelte";
 	import { Elements, PaymentElement } from "svelte-stripe";
 	import { quintOut } from "svelte/easing";
+	import { m } from "$lib/paraglide/messages";
+	import { ToastManager } from "$lib/util/toast.svelte";
+	import { log } from "$lib/util/logger";
 
 	let amount = $state(1);
 	let customAmount = $state("");
@@ -58,6 +59,9 @@
 
 	const paymentClick = async () => {
 		if (paymentState !== "prepay") return;
+
+		if (!stripe) stripe = await loadStripe(PUB_STRIPE_KEY);
+
 		paymentState = "fetching";
 		const res = await fetch(`${PUB_DONATION_URL}/billing`, {
 			method: "POST",
@@ -66,10 +70,10 @@
 
 		if (!res.ok) {
 			paymentState = "prepay";
-			addToast(
-				"error",
-				"Error fetching payment details. Please try again later.",
-			);
+			ToastManager.add({
+				type: "error",
+				message: m["about.donate.payment_error"](),
+			});
 			return;
 		}
 
@@ -88,7 +92,17 @@
 	const transition = "cubic-bezier(0.23, 1, 0.320, 1)";
 
 	onMount(async () => {
-		stripe = await loadStripe(PUB_STRIPE_KEY);
+		if (!isOfficial) {
+			log(
+				["about", "donate"],
+				"donations are being sent to an unofficial VERT instance - PUB_DONATION_URL and/or PUB_STRIPE_KEY have been changed.",
+			);
+		} else {
+			log(
+				["about", "donate"],
+				"donations are being sent to the official VERT instance.",
+			);
+		}
 	});
 
 	const donate = async () => {
@@ -98,10 +112,14 @@
 
 		const submitResult = await elements.submit();
 		if (submitResult.error) {
-			addToast(
-				"error",
-				`Payment failed: ${submitResult.error.message}${submitResult.error.message?.endsWith(".") ? "" : "."} You have not been charged.`,
-			);
+			const period = submitResult.error.message?.endsWith(".") ? "" : ".";
+			ToastManager.add({
+				type: "error",
+				message: m["about.donate.payment_failed"]({
+					message: submitResult.error.message || "",
+					period,
+				}),
+			});
 			enablePay = true;
 			return;
 		}
@@ -116,12 +134,19 @@
 		});
 
 		if (res.error) {
-			addToast(
-				"error",
-				`Payment failed: ${res.error.message}${res.error.message?.endsWith(".") ? "" : "."} You have not been charged.`,
-			);
+			const period = res.error.message?.endsWith(".") ? "" : ".";
+			ToastManager.add({
+				type: "error",
+				message: m["about.donate.payment_failed"]({
+					message: res.error.message || "",
+					period,
+				}),
+			});
 		} else {
-			addToast("success", "Thank you for your donation!");
+			ToastManager.add({
+				type: "info",
+				message: m["about.donate.thank_you"](),
+			});
 		}
 
 		paymentState = "prepay";
@@ -140,13 +165,16 @@
 		if (status) {
 			switch (status) {
 				case "succeeded":
-					addToast("success", "Thank you for your donation!");
+					ToastManager.add({
+						type: "success",
+						message: m["about.donate.thank_you"](),
+					});
 					break;
 				default:
-					addToast(
-						"error",
-						"An error occurred while processing your donation. Please try again later.",
-					);
+					ToastManager.add({
+						type: "error",
+						message: m["about.donate.donation_error"](),
+					});
 			}
 
 			goto("/about");
@@ -162,10 +190,10 @@
 			>
 				<HeartIcon color="black" />
 			</div>
-			Donate to VERT
+			{m["about.donate.title"]()}
 		</h2>
 		<p class="text-base font-normal">
-			With your support, we can keep maintaining and improving VERT.
+			{m["about.donate.description"]()}
 		</p>
 	</div>
 
@@ -192,7 +220,7 @@
 				)}
 			>
 				<HandCoinsIcon size="24" class="inline-block mr-2" />
-				One-time
+				{m["about.donate.one_time"]()}
 			</button>
 
 			<button
@@ -207,30 +235,32 @@
 				)}
 			>
 				<CalendarHeartIcon size="24" class="inline-block mr-2" />
-				Monthly
+				{m["about.donate.monthly"]()}
 			</button>
 		</div>
-		<div class="flex gap-3 w-full">
-			{#each presetAmounts as preset}
+		<div class="grid grid-cols-4 gap-3 w-full">
+			{#each presetAmounts as preset, i}
 				<button
 					onclick={() => amountClick(preset)}
 					class={clsx(
-						"btn flex-1 p-4 rounded-lg flex items-center justify-center",
+						"btn p-4 rounded-lg flex items-center justify-center",
 						{
 							"!scale-100": !$effects,
 							"bg-accent-red text-black": amount === preset,
 						},
 					)}
+					style={i === 2 ? "grid-column: 3;" : ""}
 				>
 					${preset} USD
 				</button>
 			{/each}
-			<div class="flex-[2] flex items-center justify-center">
+			<div class="flex items-center justify-center">
 				<FancyInput
 					bind:value={customAmount}
-					placeholder="Custom"
+					placeholder={m["about.donate.custom"]()}
 					prefix="$"
 					type="number"
+					class="h-full"
 				/>
 			</div>
 		</div>
@@ -287,7 +317,9 @@
 								class="btn w-full h-12 bg-accent-red text-black rounded-full mt-4"
 								onclick={donate}
 							>
-								Donate ${amount.toFixed(2)} USD
+								{m["about.donate.donate_amount"]({
+									amount: amount.toFixed(2),
+								})}
 							</button>
 						</div>
 					</div>
@@ -303,10 +335,26 @@
 						class="row-start-1 col-start-1 flex justify-center items-center"
 					>
 						<WalletIcon size="24" class="inline-block mr-2" />
-						Pay now
+						{m["about.donate.pay_now"]()}
 					</div>
 				{/if}
 			</div>
 		</div>
 	</div>
+
+	<p class="text-sm font-normal text-muted">
+		{#if isOfficial}
+			{m["about.donate.donation_notice_official"]()}
+		{:else}
+			{@html sanitize(
+				link(
+					"official_link",
+					m["about.donate.donation_notice_unofficial"](),
+					"https://vert.sh",
+					true,
+					"",
+				),
+			)}
+		{/if}
+	</p>
 </Panel>

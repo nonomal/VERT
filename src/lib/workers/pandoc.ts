@@ -1,3 +1,4 @@
+import type { WorkerMessage } from "$lib/types";
 import * as wasiShim from "@bjorn3/browser_wasi_shim";
 import * as zip from "client-zip";
 
@@ -37,18 +38,19 @@ type Format =
 	| ".markdown";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const handleMessage = async (message: any): Promise<any> => {
+const handleMessage = async (message: WorkerMessage): Promise<any> => {
 	switch (message.type) {
 		case "load": {
 			wasm = message.wasm;
-			postMessage({ type: "loaded" });
+			postMessage({ type: "loaded", id: "0" });
 			break;
 		}
 
 		case "convert": {
 			try {
-				// eslint-disable-next-line prefer-const
-				let { to, file }: { to: Format; file: File } = message;
+				const { to: ext, input } = message;
+				const file = input.file as File;
+				const to = ext as Format;
 				if (to === ".rtf") {
 					throw new Error(
 						"Converting into RTF is currently not supported.",
@@ -113,8 +115,6 @@ const formatToReader = (format: Format): string => {
 			return "rtf";
 		case ".rst":
 			return "rst";
-		case ".xml":
-			return "xml";
 	}
 
 	throw new Error(`Unsupported format: ${format}`);
@@ -228,7 +228,7 @@ async function pandoc(
 		);
 		if (folders.length > 0) {
 			const file = new File(
-				[out_file.data],
+				[new Uint8Array(Array.from(out_file.data))],
 				`${in_name.split(".").slice(0, -1).join(".")}${out_ext}`,
 			);
 			const filteredMap = new Map<string, PandocFsEntry>();
@@ -279,7 +279,7 @@ const pandocToFiles = (entries: PandocEntries, parent = ""): File[] => {
 			const nestedFiles = pandocToFiles(entry.entries, fullPath);
 			flattened.push(...nestedFiles);
 		} else {
-			const file = new File([entry.data], fullPath);
+			const file = new File([new Uint8Array(Array.from(entry.data))], fullPath);
 			flattened.push(file);
 		}
 	}

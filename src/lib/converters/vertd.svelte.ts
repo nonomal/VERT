@@ -1,19 +1,11 @@
-import { log } from "$lib/logger";
+import VertdErrorComponent from "$lib/components/functional/VertdError.svelte";
+import { error, log } from "$lib/util/logger";
+import { m } from "$lib/paraglide/messages";
 import { Settings } from "$lib/sections/settings/index.svelte";
+import { VertdInstance } from "$lib/sections/settings/vertdSettings.svelte";
 import { VertFile } from "$lib/types";
 import { Converter, FormatInfo } from "./converter.svelte";
-
-interface VertdError {
-	type: "error";
-	data: string;
-}
-
-interface VertdSuccess<T> {
-	type: "success";
-	data: T;
-}
-
-type VertdResponse<T> = VertdError | VertdSuccess<T>;
+import { PUB_DISABLE_FAILURE_BLOCKS } from "$env/static/public";
 
 interface UploadResponse {
 	id: string;
@@ -24,19 +16,46 @@ interface UploadResponse {
 	totalFrames: number;
 }
 
-interface RouteMap {
-	"/api/upload": UploadResponse;
-	"/api/version": string;
+interface RouteRequestMap {
+	"/api/keep": {
+		id: string;
+		token: string;
+	};
 }
 
-const vertdFetch = async <U extends keyof RouteMap>(
-	url: U,
-	options: RequestInit,
-): Promise<RouteMap[U]> => {
-	const domain = Settings.instance.settings.vertdURL;
-	const res = await fetch(`${domain}${url}`, options);
+interface RouteResponseMap {
+	"/api/upload": UploadResponse;
+	"/api/version": string;
+	"/api/keep": void;
+}
+
+export const vertdFetch: {
+	<U extends keyof RouteRequestMap>(
+		url: U,
+		options: RequestInit,
+		body: RouteRequestMap[U],
+	): Promise<RouteResponseMap[U]>;
+	<U extends Exclude<keyof RouteResponseMap, keyof RouteRequestMap>>(
+		url: U,
+		options: RequestInit,
+	): Promise<RouteResponseMap[U]>;
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+} = async (url: any, options: RequestInit, body?: any) => {
+	const domain = await VertdInstance.instance.url();
+
+	// if there is a body, insert a Content-Type: application/json header
+	if (body) {
+		options.headers = {
+			"Content-Type": "application/json",
+			...(options.headers || {}),
+		};
+		options.body = JSON.stringify(body);
+	}
+
+	const res = await fetch(domain + url, options);
+
 	const text = await res.text();
-	let json: VertdResponse<RouteMap[U]> = null!;
+	let json = null;
 	try {
 		json = JSON.parse(text);
 	} catch {
@@ -47,7 +66,7 @@ const vertdFetch = async <U extends keyof RouteMap>(
 		throw new Error(json.data);
 	}
 
-	return json.data as RouteMap[U];
+	return json.data;
 };
 
 // ws types
@@ -67,6 +86,7 @@ interface StartJobMessage {
 		jobId: string;
 		to: string;
 		speed: ConversionSpeed;
+		keepMetadata: boolean;
 	};
 }
 
@@ -89,6 +109,21 @@ interface CompletedMessage {
 	};
 }
 
+interface CancelJobMessage {
+	type: "cancelJob";
+	data: {
+		jobId: string;
+		token: string;
+	};
+}
+
+interface JobCancelledMessage {
+	type: "jobCancelled";
+	data: {
+		jobId: string;
+	};
+}
+
 interface FpsProgress {
 	type: "fps";
 	data: number;
@@ -105,6 +140,8 @@ type VertdMessage =
 	| StartJobMessage
 	| ErrorMessage
 	| ProgressMessage
+	| CancelJobMessage
+	| JobCancelledMessage
 	| CompletedMessage;
 
 const progressEstimates = {
@@ -124,7 +161,7 @@ const progressEstimate = (
 };
 
 const uploadFile = async (file: VertFile): Promise<UploadResponse> => {
-	const apiUrl = Settings.instance.settings.vertdURL;
+	const apiUrl = await VertdInstance.instance.url();
 	const formData = new FormData();
 	formData.append("file", file.file, file.name);
 	const xhr = new XMLHttpRequest();
@@ -201,6 +238,15 @@ export class VertdConverter extends Converter {
 	public ready = $state(false);
 	public reportsProgress = true;
 
+	private activeConversions = new Map<
+		string,
+		{
+			ws: WebSocket;
+			jobId: string;
+			token: string;
+		}
+	>();
+
 	public supportedFormats = [
 		new FormatInfo("mkv", true, true),
 		new FormatInfo("mp4", true, true),
@@ -212,6 +258,24 @@ export class VertdConverter extends Converter {
 		new FormatInfo("mts", true, true),
 		new FormatInfo("ts", true, true),
 		new FormatInfo("m2ts", true, true),
+		new FormatInfo("mpg", true, true),
+		new FormatInfo("mpeg", true, true),
+		new FormatInfo("flv", true, true),
+		new FormatInfo("f4v", true, true),
+		new FormatInfo("vob", true, true),
+		new FormatInfo("m4v", true, true),
+		new FormatInfo("3gp", true, true),
+		new FormatInfo("3g2", true, true),
+		new FormatInfo("mxf", true, true),
+		new FormatInfo("ogv", true, true),
+		new FormatInfo("rm", true, false),
+		new FormatInfo("rmvb", true, false),
+		new FormatInfo("h264", true, true),
+		new FormatInfo("divx", true, true),
+		new FormatInfo("swf", true, true),
+		new FormatInfo("amv", true, true),
+		new FormatInfo("asf", true, true),
+		new FormatInfo("nut", true, true),
 	];
 
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -222,23 +286,90 @@ export class VertdConverter extends Converter {
 		this.log = (msg) => log(["converters", this.name], msg);
 		this.log("created converter");
 		this.log("not rly sure how to implement this :P");
-		this.ready = true;
+		this.status = "ready";
+	}
+
+	private blocked(hash: string): boolean {
+		let blockedHashes = Settings.instance.settings.vertdBlockedHashes;
+
+		// ensure it's a map
+		// this might fix the "e.get" isn't a function error, but i can't reproduce it
+		if (!(blockedHashes instanceof Map) || blockedHashes === null) {
+			blockedHashes = new Map(Object.entries(blockedHashes || {}));
+			Settings.instance.settings.vertdBlockedHashes = blockedHashes;
+			Settings.instance.save();
+		}
+
+		const now = new Date();
+		const dates = blockedHashes.get(hash) || [];
+		const filteredDates = dates.filter(
+			(date) => now.getTime() - date.getTime() < 60 * 60 * 1000,
+		);
+
+		if (filteredDates.length === 0) {
+			blockedHashes.delete(hash);
+			return false;
+		}
+
+		blockedHashes.set(hash, filteredDates);
+
+		Settings.instance.save();
+
+		return filteredDates.length >= 3;
+	}
+
+	private failure(hash: string): void {
+		let blockedHashes = Settings.instance.settings.vertdBlockedHashes;
+
+		// same as above (blocked())
+		if (!(blockedHashes instanceof Map) || blockedHashes === null) {
+			blockedHashes = new Map(Object.entries(blockedHashes || {}));
+			Settings.instance.settings.vertdBlockedHashes = blockedHashes;
+			Settings.instance.save();
+		}
+
+		const now = new Date();
+		const dates = blockedHashes.get(hash) || [];
+		dates.push(now);
+		blockedHashes.set(hash, dates);
+		Settings.instance.save();
 	}
 
 	public async convert(input: VertFile, to: string): Promise<VertFile> {
 		if (to.startsWith(".")) to = to.slice(1);
 
+		let hash: string;
+		if (PUB_DISABLE_FAILURE_BLOCKS === "false") {
+			hash = await input.hash();
+
+			if (this.blocked(hash)) {
+				this.log(`conversion blocked for file ${input.name}`);
+				throw new Error(
+					m["convert.errors.vertd_ratelimit"]({
+						filename: input.name,
+					}),
+				);
+			}
+		}
+
 		const uploadRes = await uploadFile(input);
-		console.log(uploadRes);
+		const apiUrl = await VertdInstance.instance.url();
 
 		return new Promise((resolve, reject) => {
-			const apiUrl = Settings.instance.settings.vertdURL;
 			const protocol = apiUrl.startsWith("https") ? "wss:" : "ws:";
 			const ws = new WebSocket(
 				`${protocol}//${apiUrl.replace("http://", "").replace("https://", "")}/api/ws`,
 			);
+
+			this.activeConversions.set(input.id, {
+				ws,
+				jobId: uploadRes.id,
+				token: uploadRes.auth,
+			});
+
 			ws.onopen = () => {
 				const speed = Settings.instance.settings.vertdSpeed;
+				const keepMetadata = Settings.instance.settings.metadata;
 				this.log("opened ws connection to vertd");
 				const msg: StartJobMessage = {
 					type: "startJob",
@@ -247,6 +378,7 @@ export class VertdConverter extends Converter {
 						token: uploadRes.auth,
 						to,
 						speed,
+						keepMetadata,
 					},
 				};
 				ws.send(JSON.stringify(msg));
@@ -271,6 +403,7 @@ export class VertdConverter extends Converter {
 					case "jobFinished": {
 						this.log("job finished");
 						ws.close();
+						this.activeConversions.delete(input.id);
 						const url = `${apiUrl}/api/download/${msg.data.jobId}/${uploadRes.auth}`;
 						this.log(`downloading from ${url}`);
 						// const res = await fetch(url).then((res) => res.blob());
@@ -279,17 +412,70 @@ export class VertdConverter extends Converter {
 						break;
 					}
 
+					case "jobCancelled": {
+						this.log("job cancelled");
+						ws.close();
+						this.activeConversions.delete(input.id);
+						reject("Conversion cancelled");
+						break;
+					}
+
 					case "error": {
 						this.log(`error: ${msg.data.message}`);
-						reject(msg.data.message);
+						this.activeConversions.delete(input.id);
+						if (hash) this.failure(hash);
+
+						reject({
+							component: VertdErrorComponent,
+							additional: {
+								jobId: uploadRes.id,
+								auth: uploadRes.auth,
+								from: input.from,
+								to: to,
+								errorMessage: msg.data.message,
+							},
+						});
 					}
 				}
 			};
 		});
 	}
 
+	public async cancel(input: VertFile): Promise<void> {
+		const activeConversion = this.activeConversions.get(input.id);
+		if (!activeConversion) {
+			error(
+				["converters", this.name],
+				`no active conversion found for file ${input.name}`,
+			);
+			return;
+		}
+
+		log(
+			["converters", this.name],
+			`cancelling conversion for file ${input.name}`,
+		);
+
+		const { ws, jobId, token } = activeConversion;
+
+		if (ws.readyState === WebSocket.OPEN) {
+			const cancelMsg: CancelJobMessage = {
+				type: "cancelJob",
+				data: {
+					jobId,
+					token,
+				},
+			};
+			ws.send(JSON.stringify(cancelMsg));
+			this.log("sent cancelJob message");
+		}
+
+		ws.close();
+		this.activeConversions.delete(input.id);
+	}
+
 	public async valid(): Promise<boolean> {
-		if (!Settings.instance.settings.vertdURL) {
+		if (!(await VertdInstance.instance.url())) {
 			return false;
 		}
 

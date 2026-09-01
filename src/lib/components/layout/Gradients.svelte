@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { page } from "$app/state";
-	import { duration, transition } from "$lib/animation";
+	import { duration, transition } from "$lib/util/animation";
 	import VertVBig from "$lib/assets/vert-bg.svg?component";
 	import {
 		files,
@@ -8,7 +8,7 @@
 		showGradient,
 	} from "$lib/store/index.svelte";
 	import { quintOut } from "svelte/easing";
-	import { fade } from "$lib/animation";
+	import { fade } from "$lib/util/animation";
 	import { Tween } from "svelte/motion";
 
 	const colors: {
@@ -37,7 +37,7 @@
 			at: 25,
 		},
 		{
-			matcher: (path) => path === "/jpegify/",
+			matcher: (path) => path === "/privacy/",
 			color: "var(--bg-gradient-red-from)",
 			at: 100,
 		},
